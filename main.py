@@ -1877,9 +1877,74 @@ class GUIBuilderApp(ctk.CTk):
     
     def on_global_delete(self, event):
         """Global delete key handler"""
+        # Check if focus is on a text input widget in properties editor
+        if hasattr(self, 'properties_editor'):
+            focused_widget = self.focus_get()
+            if focused_widget and self.is_properties_text_widget(focused_widget):
+                # Don't delete widget if typing in properties editor
+                return "break"
+            
+            # Additional check: if any property widget has focus, don't delete
+            if hasattr(self.properties_editor, 'property_widgets'):
+                for prop_widget in self.properties_editor.property_widgets.values():
+                    if prop_widget == focused_widget or self.is_widget_or_child_focused(prop_widget):
+                        return "break"
+        
         if hasattr(self, 'canvas') and self.canvas.selected_widget_id:
             self.canvas.on_delete_key(event)
         return "break"
+    
+    def is_properties_text_widget(self, widget):
+        """Check if the widget is a text input in the properties editor"""
+        if not hasattr(self, 'properties_editor'):
+            return False
+        
+        # Check if the widget is within the properties editor
+        try:
+            # Walk up the widget hierarchy to see if we're in the properties editor
+            current = widget
+            while current:
+                if current == self.properties_editor:
+                    # Check if it's a text input widget (CTkEntry)
+                    if hasattr(widget, '_entry') or str(type(widget)).find('CTkEntry') != -1:
+                        return True
+                    # Also check for CTkTextbox
+                    if str(type(widget)).find('CTkTextbox') != -1:
+                        return True
+                    break
+                current = current.master
+        except:
+            pass
+        
+        # Additional check: if any property widget has focus, don't delete
+        if hasattr(self.properties_editor, 'property_widgets'):
+            for prop_widget in self.properties_editor.property_widgets.values():
+                if prop_widget == widget or self.is_widget_or_child_focused(prop_widget):
+                    return True
+        
+        return False
+    
+    def is_widget_or_child_focused(self, widget):
+        """Check if the widget or any of its children has focus"""
+        try:
+            focused_widget = self.focus_get()
+            if not focused_widget:
+                return False
+            
+            # Check if the focused widget is the same as our widget
+            if focused_widget == widget:
+                return True
+            
+            # Check if the focused widget is a child of our widget
+            current = focused_widget
+            while current:
+                if current == widget:
+                    return True
+                current = current.master
+        except:
+            pass
+        
+        return False
     
     def on_global_copy(self, event):
         """Global copy key handler"""
