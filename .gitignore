@@ -147,3 +147,9 @@ Thumbs.db
 # Project specific
 recent_files.json
 *.json.bak
+temp_preview.py
+temp_run.py
+*_generated.py
+main_original.py
+main_new.py
+test_*.py
