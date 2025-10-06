@@ -550,6 +550,22 @@ class GUIBuilderApp(ctk.CTk):
         except:
             pass
     
+    def update_status_info(self):
+        """Update status bar with project info"""
+        widget_count = len(self.canvas.widgets) if hasattr(self.canvas, 'widgets') else 0
+        status = f"Widgets: {widget_count}"
+        if self.project_modified:
+            status += " (Modified)"
+        self.status_bar.configure(text=status)
+    
+    def on_main_window_close(self):
+        """Handle main window close"""
+        if self.project_modified:
+            if messagebox.askyesno("Unsaved Changes", "You have unsaved changes. Exit anyway?"):
+                self.destroy()
+        else:
+            self.destroy()
+    
     def save_project_as(self):
         """Save project as new file"""
         file_path = filedialog.asksaveasfilename(
@@ -987,22 +1003,6 @@ Built with Python and CustomTkinter.
     def on_global_preferences(self, event):
         """Global preferences handler"""
         self.show_preferences()
-    
-    def update_status_info(self):
-        """Update status bar with project info"""
-        widget_count = len(self.canvas.widgets) if hasattr(self.canvas, 'widgets') else 0
-        status = f"Widgets: {widget_count}"
-        if self.project_modified:
-            status += " (Modified)"
-        self.status_bar.configure(text=status)
-    
-    def on_main_window_close(self):
-        """Handle main window close"""
-        if self.project_modified:
-            if messagebox.askyesno("Unsaved Changes", "You have unsaved changes. Exit anyway?"):
-                self.destroy()
-        else:
-            self.destroy()
 
 
 def main():
