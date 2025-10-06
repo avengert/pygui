@@ -7,7 +7,7 @@ import customtkinter as ctk
 import tkinter as tk
 import uuid
 from typing import Dict, List, Optional, Any
-from models.widget_types import WidgetType, WidgetProperty, WidgetData
+from models.widget_types import WidgetType, WidgetProperty, WidgetData, WidgetGroup
 
 
 class DesignCanvas(ctk.CTkCanvas):
@@ -18,7 +18,10 @@ class DesignCanvas(ctk.CTkCanvas):
         self.on_widget_select = on_widget_select
         self.status_bar = status_bar
         self.widgets: Dict[str, WidgetData] = {}
+        self.groups: Dict[str, WidgetGroup] = {}
         self.selected_widget_id: Optional[str] = None
+        self.selected_widget_ids: List[str] = []  # Multi-selection support
+        self.selected_group_id: Optional[str] = None
         self.drag_data = {"x": 0, "y": 0, "widget": None}
         self.grid_size = 10  # Smaller grid for smoother movement
         self.show_grid = True
@@ -298,6 +301,22 @@ class DesignCanvas(ctk.CTkCanvas):
         # Draw window boundary after rendering widgets
         self.draw_window_boundary()
     
+    def render_all_widgets(self):
+        """Render all widgets on the canvas in layer order"""
+        self.delete("all")
+        
+        # Sort widgets by layer (lower layers first)
+        sorted_widgets = sorted(self.widgets.values(), key=lambda w: w.layer)
+        
+        for widget_data in sorted_widgets:
+            self.render_widget(widget_data)
+        
+        # Render groups after widgets
+        for group in self.groups.values():
+            self.render_group(group)
+        
+        self.draw_grid()
+    
     def render_single_widget(self, widget_data: WidgetData):
         """Render a single widget on the canvas"""
         # Remove existing widget representation and handles
@@ -314,7 +333,7 @@ class DesignCanvas(ctk.CTkCanvas):
         # Main widget rectangle
         fill_color = widget_colors["fill"]
         outline_color = widget_colors["outline"]
-        if widget_data.id == self.selected_widget_id:
+        if widget_data.id in self.selected_widget_ids:
             fill_color = "#0066cc"
             outline_color = "#ffffff"
         
@@ -339,8 +358,8 @@ class DesignCanvas(ctk.CTkCanvas):
             tags=f"widget_{widget_data.id}"
         )
         
-        # Selection handles (only for selected widget)
-        if widget_data.id == self.selected_widget_id:
+        # Selection handles (for all selected widgets)
+        if widget_data.id in self.selected_widget_ids:
             self.draw_selection_handles(widget_data)
     
     def get_widget_display_text(self, widget_data: WidgetData) -> str:
@@ -469,30 +488,75 @@ class DesignCanvas(ctk.CTkCanvas):
         # Ensure canvas has focus for keyboard events
         self.focus_set()
         
-        # First check if clicking on a resize handle
-        handle_info = self.find_handle_at_position(event.x, event.y)
-        if handle_info:
-            widget_id, handle_index = handle_info
-            self.select_widget(widget_id)
-            widget_data = self.widgets[widget_id]
-            # Set resize data with original dimensions
+        # First check if clicking on a group
+        group_id = self.find_group_at_position(event.x, event.y)
+        if group_id:
+            self.select_group(group_id)
+            self.deselect_all()
+            # Set drag data for group movement
+            group = self.groups[group_id]
             self.drag_data = {
                 "x": event.x, 
                 "y": event.y, 
-                "widget": widget_id, 
-                "mode": "resize", 
-                "handle": handle_index,
-                "original_x": widget_data.x,
-                "original_y": widget_data.y,
-                "original_width": widget_data.width,
-                "original_height": widget_data.height
+                "widget": None,
+                "group": group_id,
+                "mode": "move_group",
+                "original_x": group.x,
+                "original_y": group.y
             }
             return "break"
+        
+        # Then check if clicking on a resize handle
+        handle_info = self.find_handle_at_position(event.x, event.y)
+        if handle_info:
+            item_id, handle_index, item_type = handle_info
+            
+            if item_type == "group_props":
+                # Open group properties dialog
+                self.show_group_properties_dialog(item_id)
+                return "break"
+            elif item_type == "group":
+                # Group resize
+                group = self.groups[item_id]
+                self.drag_data = {
+                    "x": event.x, 
+                    "y": event.y, 
+                    "group": item_id,
+                    "mode": "resize_group", 
+                    "handle": handle_index,
+                    "original_x": group.x,
+                    "original_y": group.y,
+                    "original_width": group.width,
+                    "original_height": group.height
+                }
+                return "break"
+            elif item_type == "widget":
+                # Widget resize
+                self.select_widget(item_id)
+                widget_data = self.widgets[item_id]
+                self.drag_data = {
+                    "x": event.x, 
+                    "y": event.y, 
+                    "widget": item_id, 
+                    "mode": "resize", 
+                    "handle": handle_index,
+                    "original_x": widget_data.x,
+                    "original_y": widget_data.y,
+                    "original_width": widget_data.width,
+                    "original_height": widget_data.height
+                }
+                return "break"
         
         # Then check if clicking on a widget
         widget_id = self.find_widget_at_position(event.x, event.y)
         if widget_id:
-            self.select_widget(widget_id)
+            # Check for Ctrl+click for multi-selection
+            if event.state & 0x4:  # Ctrl key is pressed
+                self.toggle_widget_selection(widget_id)
+            else:
+                self.select_widget(widget_id)
+                self.deselect_group()
+            
             widget_data = self.widgets[widget_id]
             # Set drag data for potential dragging with proper offset calculation
             self.drag_data = {
@@ -509,6 +573,7 @@ class DesignCanvas(ctk.CTkCanvas):
             return "break"
         else:
             self.deselect_all()
+            self.deselect_group()
             # Clear drag data when clicking empty space
             self.drag_data = {"x": 0, "y": 0, "widget": None, "mode": None}
     
@@ -522,6 +587,30 @@ class DesignCanvas(ctk.CTkCanvas):
     
     def find_handle_at_position(self, x: int, y: int) -> Optional[tuple]:
         """Find resize handle at given position. Returns (widget_id, handle_index) or None"""
+        # Check group handles first
+        if self.selected_group_id and self.selected_group_id in self.groups:
+            group = self.groups[self.selected_group_id]
+            handle_size = 8
+            
+            # Check group handles
+            handles = [
+                (group.x - 5 - handle_size//2, group.y - 5 - handle_size//2),  # Top-left
+                (group.x + group.width + 5 - handle_size//2, group.y - 5 - handle_size//2),  # Top-right
+                (group.x - 5 - handle_size//2, group.y + group.height + 5 - handle_size//2),  # Bottom-left
+                (group.x + group.width + 5 - handle_size//2, group.y + group.height + 5 - handle_size//2),  # Bottom-right
+            ]
+            
+            for i, (hx, hy) in enumerate(handles):
+                if (hx <= x <= hx + handle_size and hy <= y <= hy + handle_size):
+                    return (self.selected_group_id, i, "group")
+            
+            # Check group properties button
+            props_x = group.x + group.width - 80
+            props_y = group.y - 25
+            if (props_x <= x <= props_x + 70 and props_y <= y <= props_y + 15):
+                return (self.selected_group_id, -1, "group_props")
+        
+        # Check widget handles
         if not self.selected_widget_id:
             return None
             
@@ -540,25 +629,125 @@ class DesignCanvas(ctk.CTkCanvas):
         
         for i, (hx, hy) in enumerate(handles):
             if (hx <= x <= hx + handle_size and hy <= y <= hy + handle_size):
-                return (self.selected_widget_id, i)
+                return (self.selected_widget_id, i, "widget")
         return None
     
     def select_widget(self, widget_id: str):
         """Select a widget"""
         self.selected_widget_id = widget_id
+        self.selected_widget_ids = [widget_id]  # Update multi-selection
         self.on_widget_select(self.widgets[widget_id])
         self.render_widget(self.widgets[widget_id])
+    
+    def toggle_widget_selection(self, widget_id: str):
+        """Toggle widget selection for multi-selection"""
+        if widget_id in self.selected_widget_ids:
+            # Remove from selection
+            self.selected_widget_ids.remove(widget_id)
+            if self.selected_widget_id == widget_id:
+                # If this was the primary selection, pick another or clear
+                if self.selected_widget_ids:
+                    self.selected_widget_id = self.selected_widget_ids[0]
+                    self.on_widget_select(self.widgets[self.selected_widget_id])
+                else:
+                    self.selected_widget_id = None
+                    self.on_widget_select(None)
+        else:
+            # Add to selection
+            self.selected_widget_ids.append(widget_id)
+            self.selected_widget_id = widget_id
+            self.on_widget_select(self.widgets[widget_id])
+        
+        # Re-render all widgets to show selection state
+        for widget_data in self.widgets.values():
+            self.render_widget(widget_data)
     
     def deselect_all(self):
         """Deselect all widgets"""
         self.selected_widget_id = None
+        self.selected_widget_ids = []
         self.on_widget_select(None)
         for widget_data in self.widgets.values():
             self.render_widget(widget_data)
     
     def on_canvas_drag(self, event):
         """Handle canvas drag events"""
-        if self.drag_data["widget"]:
+        if self.drag_data.get("group"):
+            group_id = self.drag_data["group"]
+            mode = self.drag_data.get("mode", "move_group")
+            
+            if mode == "move_group":
+                # Handle group movement
+                if group_id in self.groups:
+                    group = self.groups[group_id]
+                    original_x = self.drag_data.get("original_x", group.x)
+                    original_y = self.drag_data.get("original_y", group.y)
+                    
+                    dx = event.x - self.drag_data["x"]
+                    dy = event.y - self.drag_data["y"]
+                    
+                    # Snap to grid if enabled
+                    if self.snap_to_grid:
+                        dx = round(dx / self.grid_size) * self.grid_size
+                        dy = round(dy / self.grid_size) * self.grid_size
+                    
+                    # Move the group
+                    self.move_group(group_id, dx, dy)
+                    
+                    # Update drag data for next movement
+                    self.drag_data["x"] = event.x
+                    self.drag_data["y"] = event.y
+                    self.drag_data["original_x"] = group.x
+                    self.drag_data["original_y"] = group.y
+                    
+            elif mode == "resize_group":
+                # Handle group resizing
+                if group_id in self.groups:
+                    group = self.groups[group_id]
+                    handle_index = self.drag_data["handle"]
+                    
+                    # Get original group dimensions
+                    original_x = self.drag_data.get("original_x", group.x)
+                    original_y = self.drag_data.get("original_y", group.y)
+                    original_width = self.drag_data.get("original_width", group.width)
+                    original_height = self.drag_data.get("original_height", group.height)
+                    
+                    # Calculate new dimensions based on handle
+                    new_x, new_y = original_x, original_y
+                    new_width, new_height = original_width, original_height
+                    
+                    if handle_index == 0:  # Top-left
+                        new_x = event.x
+                        new_y = event.y
+                        new_width = original_width + (original_x - event.x)
+                        new_height = original_height + (original_y - event.y)
+                    elif handle_index == 1:  # Top-right
+                        new_y = event.y
+                        new_width = event.x - original_x
+                        new_height = original_height + (original_y - event.y)
+                    elif handle_index == 2:  # Bottom-left
+                        new_x = event.x
+                        new_width = original_width + (original_x - event.x)
+                        new_height = event.y - original_y
+                    elif handle_index == 3:  # Bottom-right
+                        new_width = event.x - original_x
+                        new_height = event.y - original_y
+                    
+                    # Apply minimum size constraints
+                    new_width = max(50, new_width)
+                    new_height = max(50, new_height)
+                    
+                    # Snap to grid if enabled
+                    if self.snap_to_grid:
+                        new_x = round(new_x / self.grid_size) * self.grid_size
+                        new_y = round(new_y / self.grid_size) * self.grid_size
+                        new_width = round(new_width / self.grid_size) * self.grid_size
+                        new_height = round(new_height / self.grid_size) * self.grid_size
+                    
+                    # Resize the group
+                    self.resize_group(group_id, new_width, new_height)
+                
+        elif self.drag_data["widget"]:
             widget_id = self.drag_data["widget"]
             widget_data = self.widgets[widget_id]
             mode = self.drag_data.get("mode", "move")
@@ -656,6 +845,13 @@ class DesignCanvas(ctk.CTkCanvas):
     
     def on_right_click(self, event):
         """Handle right-click context menu"""
+        # Check for group first
+        group_id = self.find_group_at_position(event.x, event.y)
+        if group_id:
+            self.show_group_context_menu(event.x, event.y, group_id)
+            return
+        
+        # Then check for widget
         widget_id = self.find_widget_at_position(event.x, event.y)
         if widget_id:
             self.show_context_menu(event.x, event.y, widget_id)
@@ -665,13 +861,84 @@ class DesignCanvas(ctk.CTkCanvas):
         context_menu = tk.Menu(self, tearoff=0)
         context_menu.add_command(label="Delete", command=lambda: self.delete_widget(widget_id))
         context_menu.add_command(label="Duplicate", command=lambda: self.duplicate_widget(widget_id))
+        context_menu.add_separator()
         context_menu.add_command(label="Bring to Front", command=lambda: self.bring_to_front(widget_id))
         context_menu.add_command(label="Send to Back", command=lambda: self.send_to_back(widget_id))
+        context_menu.add_separator()
+        
+        # Grouping options
+        if widget_id in self.widgets:
+            widget = self.widgets[widget_id]
+            if widget.group_id:
+                # Widget is in a group
+                context_menu.add_command(label="Remove from Group", command=lambda: self.remove_from_group(widget_id, widget.group_id))
+                context_menu.add_command(label="Ungroup All", command=lambda: self.ungroup_widgets(widget.group_id))
+            else:
+                # Widget is not in a group
+                context_menu.add_command(label="Create Group", command=lambda: self.create_group_from_selection())
+                
+                # Add to Group submenu
+                if self.groups:
+                    add_to_group_menu = tk.Menu(context_menu, tearoff=0)
+                    for group_id, group in self.groups.items():
+                        add_to_group_menu.add_command(
+                            label=f"{group.name} ({len(group.widget_ids)} widgets)",
+                            command=lambda gid=group_id: self.add_to_group(widget_id, gid)
+                        )
+                    context_menu.add_cascade(label="Add to Group", menu=add_to_group_menu)
+                else:
+                    context_menu.add_command(label="Add to Group", state="disabled")
         
         try:
             context_menu.tk_popup(x, y)
         finally:
             context_menu.grab_release()
+    
+    def show_group_context_menu(self, x: int, y: int, group_id: str):
+        """Show context menu for group"""
+        context_menu = tk.Menu(self, tearoff=0)
+        context_menu.add_command(label="Properties", command=lambda: self.show_group_properties_dialog(group_id))
+        context_menu.add_separator()
+        
+        # Add widget to group submenu
+        add_widget_menu = tk.Menu(context_menu, tearoff=0)
+        available_widgets = []
+        for widget_id, widget in self.widgets.items():
+            if widget_id not in self.groups[group_id].widget_ids:
+                available_widgets.append((widget_id, widget))
+        
+        if available_widgets:
+            for widget_id, widget in available_widgets[:10]:  # Limit to 10 items
+                add_widget_menu.add_command(
+                    label=f"{widget.type.value} ({widget_id[:8]})",
+                    command=lambda wid=widget_id: self.add_to_group(wid, group_id)
+                )
+            if len(available_widgets) > 10:
+                add_widget_menu.add_command(label="... (more available)", state="disabled")
+            context_menu.add_cascade(label="Add Widget", menu=add_widget_menu)
+        else:
+            context_menu.add_command(label="Add Widget", state="disabled")
+        
+        context_menu.add_separator()
+        context_menu.add_command(label="Ungroup", command=lambda: self.ungroup_widgets(group_id))
+        context_menu.add_command(label="Delete Group", command=lambda: self.delete_group(group_id))
+        context_menu.add_separator()
+        context_menu.add_command(label="Bring to Front", command=lambda: self.bring_group_to_front(group_id))
+        context_menu.add_command(label="Send to Back", command=lambda: self.send_group_to_back(group_id))
+        
+        try:
+            context_menu.tk_popup(x, y)
+        finally:
+            context_menu.grab_release()
+    
+    def create_group_from_selection(self):
+        """Create a group from currently selected widgets"""
+        if len(self.selected_widget_ids) >= 2:
+            self.create_group(name="New Group")
+        else:
+            if self.status_bar:
+                self.status_bar.configure(text="Select at least 2 widgets to create a group (Ctrl+click for multi-selection)")
+    
     
     def delete_widget(self, widget_id: str):
         """Delete a widget"""
@@ -779,12 +1046,17 @@ class DesignCanvas(ctk.CTkCanvas):
     def on_select_all(self, event):
         """Select all widgets"""
         if self.widgets:
-            # For now, just select the first widget
-            # In a full implementation, you'd select all widgets
-            first_widget_id = list(self.widgets.keys())[0]
-            self.select_widget(first_widget_id)
+            # Select all widgets
+            self.selected_widget_ids = list(self.widgets.keys())
+            self.selected_widget_id = self.selected_widget_ids[0] if self.selected_widget_ids else None
+            self.on_widget_select(self.widgets[self.selected_widget_id] if self.selected_widget_id else None)
+            
+            # Re-render all widgets to show selection
+            for widget_data in self.widgets.values():
+                self.render_widget(widget_data)
+            
             if self.status_bar:
-                self.status_bar.configure(text="Widget selected")
+                self.status_bar.configure(text=f"Selected {len(self.selected_widget_ids)} widgets")
         return "break"
     
     def on_undo(self, event):
@@ -950,3 +1222,389 @@ class DesignCanvas(ctk.CTkCanvas):
             
         except Exception as e:
             print(f"Error highlighting widgets: {e}")
+    
+    # Widget Grouping and Layer Management Methods
+    
+    def create_group(self, widget_ids: List[str] = None, name: str = None) -> str:
+        """Create a group from selected widgets"""
+        # Use multi-selection if no widget_ids provided
+        if widget_ids is None:
+            widget_ids = self.selected_widget_ids.copy()
+        
+        if len(widget_ids) < 2:
+            return None
+        
+        # Calculate group bounds
+        min_x = min(self.widgets[wid].x for wid in widget_ids)
+        min_y = min(self.widgets[wid].y for wid in widget_ids)
+        max_x = max(self.widgets[wid].x + self.widgets[wid].width for wid in widget_ids)
+        max_y = max(self.widgets[wid].y + self.widgets[wid].height for wid in widget_ids)
+        
+        group_id = str(uuid.uuid4())
+        group_name = name or f"Group {len(self.groups) + 1}"
+        
+        # If no name provided, ask user for a name
+        if not name:
+            from tkinter import simpledialog
+            group_name = simpledialog.askstring("Group Name", "Enter group name:", initialvalue=group_name)
+            if not group_name:
+                group_name = f"Group {len(self.groups) + 1}"
+        
+        group = WidgetGroup(
+            id=group_id,
+            name=group_name,
+            widget_ids=widget_ids.copy(),
+            x=min_x,
+            y=min_y,
+            width=max_x - min_x,
+            height=max_y - min_y
+        )
+        
+        self.groups[group_id] = group
+        
+        # Assign widgets to group
+        for widget_id in widget_ids:
+            if widget_id in self.widgets:
+                self.widgets[widget_id].group_id = group_id
+        
+        # Render group outline
+        self.render_group(group)
+        
+        if self.status_bar:
+            self.status_bar.configure(text=f"Group '{group_name}' created with {len(widget_ids)} widgets")
+        
+        return group_id
+    
+    def ungroup_widgets(self, group_id: str):
+        """Ungroup widgets from a group"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        
+        # Remove group assignment from widgets and re-render them
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                self.widgets[widget_id].group_id = None
+                # Re-render widget to restore individual functionality
+                self.render_widget(self.widgets[widget_id])
+                # Ensure widget is properly set up for individual interaction
+                self.delete(f"widget_{widget_id}")  # Remove old rendering
+                self.render_widget(self.widgets[widget_id])  # Fresh render
+        
+        # Remove group
+        del self.groups[group_id]
+        self.delete(f"group_{group_id}")
+        
+        # Clear any group selection
+        if self.selected_group_id == group_id:
+            self.selected_group_id = None
+        
+        if self.status_bar:
+            self.status_bar.configure(text=f"Group '{group.name}' ungrouped - widgets restored to individual mode")
+    
+    def add_to_group(self, widget_id: str, group_id: str):
+        """Add a widget to an existing group"""
+        if widget_id not in self.widgets or group_id not in self.groups:
+            return
+        
+        # Remove from current group if any
+        if self.widgets[widget_id].group_id:
+            self.remove_from_group(widget_id, self.widgets[widget_id].group_id)
+        
+        # Add to new group
+        self.widgets[widget_id].group_id = group_id
+        self.groups[group_id].widget_ids.append(widget_id)
+        
+        # Update group bounds
+        self.update_group_bounds(group_id)
+        self.render_group(self.groups[group_id])
+        
+        # Show status feedback
+        if self.status_bar:
+            self.status_bar.configure(text=f"Widget added to group '{self.groups[group_id].name}'")
+    
+    def remove_from_group(self, widget_id: str, group_id: str):
+        """Remove a widget from a group"""
+        if widget_id not in self.widgets or group_id not in self.groups:
+            return
+        
+        # Remove from group
+        if widget_id in self.groups[group_id].widget_ids:
+            self.groups[group_id].widget_ids.remove(widget_id)
+        
+        # Remove group assignment
+        self.widgets[widget_id].group_id = None
+        
+        # Re-render widget to restore individual functionality
+        self.delete(f"widget_{widget_id}")  # Remove old rendering
+        self.render_widget(self.widgets[widget_id])  # Fresh render
+        
+        # Update group bounds
+        self.update_group_bounds(group_id)
+        self.render_group(self.groups[group_id])
+        
+        # Show status feedback
+        if self.status_bar:
+            self.status_bar.configure(text=f"Widget removed from group '{self.groups[group_id].name}'")
+    
+    def update_group_bounds(self, group_id: str):
+        """Update group bounds based on its widgets"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        if not group.widget_ids:
+            return
+        
+        # Calculate new bounds
+        min_x = min(self.widgets[wid].x for wid in group.widget_ids if wid in self.widgets)
+        min_y = min(self.widgets[wid].y for wid in group.widget_ids if wid in self.widgets)
+        max_x = max(self.widgets[wid].x + self.widgets[wid].width for wid in group.widget_ids if wid in self.widgets)
+        max_y = max(self.widgets[wid].y + self.widgets[wid].height for wid in group.widget_ids if wid in self.widgets)
+        
+        group.x = min_x
+        group.y = min_y
+        group.width = max_x - min_x
+        group.height = max_y - min_y
+    
+    def render_group(self, group: WidgetGroup):
+        """Render group outline and controls"""
+        if not group.visible:
+            return
+        
+        # Remove existing group representation
+        self.delete(f"group_{group.id}")
+        
+        # Draw group outline
+        self.create_rectangle(
+            group.x - 5, group.y - 5,
+            group.x + group.width + 5, group.y + group.height + 5,
+            outline="#ffaa00",  # Orange outline
+            width=2,
+            dash=(5, 5),  # Dashed line
+            tags=f"group_{group.id}"
+        )
+        
+        # Add group label
+        self.create_text(
+            group.x, group.y - 15,
+            text=f"📁 {group.name}",
+            fill="#ffaa00",
+            font=("Arial", 10, "bold"),
+            anchor="w",
+            tags=f"group_{group.id}"
+        )
+        
+        # Add group controls if selected
+        if group.id == self.selected_group_id:
+            self.draw_group_controls(group)
+    
+    def draw_group_controls(self, group: WidgetGroup):
+        """Draw group control handles"""
+        # Corner handles for group resizing
+        handle_size = 8
+        handles = [
+            (group.x - 5 - handle_size//2, group.y - 5 - handle_size//2),  # Top-left
+            (group.x + group.width + 5 - handle_size//2, group.y - 5 - handle_size//2),  # Top-right
+            (group.x - 5 - handle_size//2, group.y + group.height + 5 - handle_size//2),  # Bottom-left
+            (group.x + group.width + 5 - handle_size//2, group.y + group.height + 5 - handle_size//2),  # Bottom-right
+        ]
+        
+        for i, (hx, hy) in enumerate(handles):
+            self.create_rectangle(
+                hx, hy, hx + handle_size, hy + handle_size,
+                fill="#ffaa00",
+                outline="#ffffff",
+                width=2,
+                tags=f"group_{group.id}"
+            )
+        
+        # Add group properties button
+        props_x = group.x + group.width - 80
+        props_y = group.y - 25
+        self.create_rectangle(
+            props_x, props_y, props_x + 70, props_y + 15,
+            fill="#ffaa00",
+            outline="#ffffff",
+            width=1,
+            tags=f"group_{group.id}"
+        )
+        self.create_text(
+            props_x + 35, props_y + 7,
+            text="⚙️ Props",
+            fill="#ffffff",
+            font=("Arial", 8, "bold"),
+            tags=f"group_{group.id}"
+        )
+    
+    def move_group(self, group_id: str, dx: int, dy: int):
+        """Move all widgets in a group"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        
+        # Move all widgets in the group
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                widget = self.widgets[widget_id]
+                widget.x += dx
+                widget.y += dy
+                self.render_widget(widget)
+        
+        # Update group bounds
+        self.update_group_bounds(group_id)
+        self.render_group(group)
+    
+    def resize_group(self, group_id: str, new_width: int, new_height: int):
+        """Resize all widgets in a group proportionally"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        
+        # Calculate scale factors
+        scale_x = new_width / group.width if group.width > 0 else 1
+        scale_y = new_height / group.height if group.height > 0 else 1
+        
+        # Resize all widgets in the group
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                widget = self.widgets[widget_id]
+                # Calculate relative position within group
+                rel_x = widget.x - group.x
+                rel_y = widget.y - group.y
+                
+                # Apply scaling
+                widget.x = group.x + int(rel_x * scale_x)
+                widget.y = group.y + int(rel_y * scale_y)
+                widget.width = max(20, int(widget.width * scale_x))
+                widget.height = max(20, int(widget.height * scale_y))
+                
+                self.render_widget(widget)
+        
+        # Update group bounds
+        group.width = new_width
+        group.height = new_height
+        self.render_group(group)
+    
+    def delete_group(self, group_id: str):
+        """Delete a group and all its widgets"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        
+        # Delete all widgets in the group
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                self.delete_widget(widget_id)
+        
+        # Remove group
+        del self.groups[group_id]
+        self.delete(f"group_{group_id}")
+        
+        if self.status_bar:
+            self.status_bar.configure(text=f"Group '{group.name}' deleted")
+    
+    def set_widget_layer(self, widget_id: str, layer: int):
+        """Set the layer of a widget"""
+        if widget_id in self.widgets:
+            self.widgets[widget_id].layer = layer
+            self.render_widget(self.widgets[widget_id])
+    
+    def set_group_layer(self, group_id: str, layer: int):
+        """Set the layer of all widgets in a group"""
+        if group_id not in self.groups:
+            return
+        
+        group = self.groups[group_id]
+        group.layer = layer
+        
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                self.widgets[widget_id].layer = layer
+                self.render_widget(self.widgets[widget_id])
+        
+        self.render_group(group)
+    
+    def bring_to_front(self, widget_id: str):
+        """Bring widget to front (highest layer)"""
+        if widget_id in self.widgets:
+            max_layer = max((w.layer for w in self.widgets.values()), default=0)
+            self.set_widget_layer(widget_id, max_layer + 1)
+    
+    def send_to_back(self, widget_id: str):
+        """Send widget to back (lowest layer)"""
+        if widget_id in self.widgets:
+            min_layer = min((w.layer for w in self.widgets.values()), default=0)
+            self.set_widget_layer(widget_id, min_layer - 1)
+    
+    def bring_group_to_front(self, group_id: str):
+        """Bring group to front (highest layer)"""
+        if group_id in self.groups:
+            max_layer = max((w.layer for w in self.widgets.values()), default=0)
+            self.set_group_layer(group_id, max_layer + 1)
+            if self.status_bar:
+                self.status_bar.configure(text="Group brought to front")
+    
+    def send_group_to_back(self, group_id: str):
+        """Send group to back (lowest layer)"""
+        if group_id in self.groups:
+            min_layer = min((w.layer for w in self.widgets.values()), default=0)
+            self.set_group_layer(group_id, min_layer - 1)
+            if self.status_bar:
+                self.status_bar.configure(text="Group sent to back")
+    
+    def find_group_at_position(self, x: int, y: int) -> Optional[str]:
+        """Find group at given position"""
+        for group_id, group in self.groups.items():
+            if (group.x - 5 <= x <= group.x + group.width + 5 and
+                group.y - 5 <= y <= group.y + group.height + 5):
+                return group_id
+        return None
+    
+    def select_group(self, group_id: str):
+        """Select a group"""
+        self.selected_group_id = group_id
+        self.selected_widget_id = None
+        self.render_group(self.groups[group_id])
+        
+        if self.status_bar:
+            self.status_bar.configure(text=f"Selected group: {self.groups[group_id].name}")
+    
+    def deselect_group(self):
+        """Deselect current group"""
+        if self.selected_group_id:
+            self.render_group(self.groups[self.selected_group_id])
+        self.selected_group_id = None
+    
+    def show_group_properties_dialog(self, group_id: str):
+        """Show group properties dialog"""
+        if group_id in self.groups:
+            from ui import GroupPropertiesDialog
+            GroupPropertiesDialog(
+                self.winfo_toplevel(),
+                self.groups[group_id],
+                self.on_group_properties_update
+            )
+    
+    def on_group_properties_update(self, group: WidgetGroup):
+        """Handle group properties update"""
+        # Update group layer for all widgets
+        for widget_id in group.widget_ids:
+            if widget_id in self.widgets:
+                self.widgets[widget_id].layer = group.layer
+                self.render_widget(self.widgets[widget_id])
+        
+        # Re-render group with updated properties
+        self.render_group(group)
+        
+        # Update layer list if visible
+        main_app = self.winfo_toplevel()
+        if hasattr(main_app, 'layer_panel_frame') and main_app.layer_panel_frame.winfo_viewable():
+            main_app.update_layer_list()
+        
+        if self.status_bar:
+            self.status_bar.configure(text=f"Group '{group.name}' properties updated")

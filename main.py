@@ -13,8 +13,8 @@ import sys
 from typing import Dict, List, Optional, Any
 
 # Import from our new modular structure
-from models import WidgetType, WidgetProperty, WidgetData, AppPreferences, PreferencesManager
-from ui import WidgetToolbox, DesignCanvas, PropertiesEditor, CodeEditor, PopOutCodeEditor
+from models import WidgetType, WidgetProperty, WidgetData, WidgetGroup, AppPreferences, PreferencesManager
+from ui import WidgetToolbox, DesignCanvas, PropertiesEditor, CodeEditor, PopOutCodeEditor, GroupPropertiesDialog
 from core import CodeParser, CodeGenerator
 from utils import APP_NAME, APP_VERSION
 
@@ -103,6 +103,9 @@ class GUIBuilderApp(ctk.CTk):
         self.properties_editor = PropertiesEditor(self.main_frame, self.on_property_change)
         self.properties_editor.grid(row=0, column=2, sticky="nsew", padx=(5, 0), pady=0)
         
+        # Layer Management Panel (Initially hidden)
+        self.setup_layer_panel()
+        
         # Code Editor Panel (Initially hidden)
         self.setup_code_editor()
     
@@ -148,6 +151,61 @@ class GUIBuilderApp(ctk.CTk):
         )
         self.code_export_button.pack(side="left", padx=5)
     
+    def setup_layer_panel(self):
+        """Setup the layer management panel"""
+        # Layer panel frame (initially hidden)
+        self.layer_panel_frame = ctk.CTkFrame(self.main_frame)
+        self.layer_panel_frame.grid(row=0, column=3, sticky="nsew", padx=(5, 0), pady=0)
+        self.layer_panel_frame.grid_remove()  # Hide initially
+        
+        # Layer panel title
+        layer_title = ctk.CTkLabel(self.layer_panel_frame, text="Layers", font=ctk.CTkFont(size=14, weight="bold"))
+        layer_title.pack(pady=10)
+        
+        # Layer list frame
+        self.layer_list_frame = ctk.CTkScrollableFrame(self.layer_panel_frame, height=400)
+        self.layer_list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Layer controls
+        layer_controls = ctk.CTkFrame(self.layer_panel_frame)
+        layer_controls.pack(fill="x", padx=10, pady=5)
+        
+        # Layer control buttons
+        self.bring_to_front_btn = ctk.CTkButton(
+            layer_controls,
+            text="↑ Front",
+            command=self.bring_selected_to_front,
+            width=80
+        )
+        self.bring_to_front_btn.pack(side="left", padx=2)
+        
+        self.send_to_back_btn = ctk.CTkButton(
+            layer_controls,
+            text="↓ Back",
+            command=self.send_selected_to_back,
+            width=80
+        )
+        self.send_to_back_btn.pack(side="left", padx=2)
+        
+        self.layer_up_btn = ctk.CTkButton(
+            layer_controls,
+            text="↑ Layer",
+            command=self.move_selected_up,
+            width=80
+        )
+        self.layer_up_btn.pack(side="left", padx=2)
+        
+        self.layer_down_btn = ctk.CTkButton(
+            layer_controls,
+            text="↓ Layer",
+            command=self.move_selected_down,
+            width=80
+        )
+        self.layer_down_btn.pack(side="left", padx=2)
+        
+        # Update layer list
+        self.update_layer_list()
+    
     def setup_menu(self):
         """Setup the menu bar"""
         menubar = tk.Menu(self)
@@ -180,6 +238,7 @@ class GUIBuilderApp(ctk.CTk):
         view_menu.add_command(label="Toggle Grid Snap", command=self.toggle_grid_snap, accelerator="Ctrl+Shift+G")
         view_menu.add_command(label="Toggle Window Boundary", command=self.toggle_window_boundary, accelerator="Ctrl+B")
         view_menu.add_command(label="Toggle Code View", command=self.toggle_code_view, accelerator="Ctrl+Shift+V")
+        view_menu.add_command(label="Toggle Layer Panel", command=self.toggle_layer_panel, accelerator="Ctrl+L")
         view_menu.add_separator()
         
         # Theme submenu
@@ -252,6 +311,17 @@ class GUIBuilderApp(ctk.CTk):
         
         self.grid_button = ctk.CTkButton(self.toolbar, text="🔲 Grid", command=self.toggle_grid, width=80)
         self.grid_button.pack(side="left", padx=2)
+        
+        # Separator
+        separator3 = ctk.CTkFrame(self.toolbar, width=2, height=30)
+        separator3.pack(side="left", padx=5)
+        
+        # Grouping controls
+        self.group_button = ctk.CTkButton(self.toolbar, text="📁 Group", command=self.create_group, width=80)
+        self.group_button.pack(side="left", padx=2)
+        
+        self.ungroup_button = ctk.CTkButton(self.toolbar, text="📂 Ungroup", command=self.ungroup_selected, width=80)
+        self.ungroup_button.pack(side="left", padx=2)
     
     def setup_global_bindings(self):
         """Setup global keyboard bindings"""
@@ -275,6 +345,9 @@ class GUIBuilderApp(ctk.CTk):
         self.bind_all("<Control-Shift-V>", self.on_global_toggle_code_view)
         self.bind_all("<Control-b>", self.on_global_toggle_window_boundary)
         self.bind_all("<Control-comma>", self.on_global_preferences)
+        self.bind_all("<Control-l>", self.on_global_toggle_layer_panel)
+        self.bind_all("<Control-Shift-G>", self.on_global_create_group)
+        self.bind_all("<Control-Shift-U>", self.on_global_ungroup)
     
     def apply_appearance_preferences(self):
         """Apply appearance preferences from settings"""
@@ -301,10 +374,24 @@ class GUIBuilderApp(ctk.CTk):
     def on_widget_select(self, widget_data: Optional[WidgetData]):
         """Handle widget selection"""
         self.properties_editor.set_widget(widget_data)
-        if widget_data:
-            self.status_bar.configure(text=f"Selected: {widget_data.type.value}")
+        
+        # Update status bar with selection info
+        if hasattr(self.canvas, 'selected_widget_ids'):
+            if len(self.canvas.selected_widget_ids) > 1:
+                self.status_bar.configure(text=f"Selected {len(self.canvas.selected_widget_ids)} widgets")
+            elif self.canvas.selected_widget_id and widget_data:
+                self.status_bar.configure(text=f"Selected: {widget_data.type.value}")
+            else:
+                self.status_bar.configure(text="No widget selected")
         else:
-            self.status_bar.configure(text="No widget selected")
+            if widget_data:
+                self.status_bar.configure(text=f"Selected: {widget_data.type.value}")
+            else:
+                self.status_bar.configure(text="No widget selected")
+        
+        # Update layer list if layer panel is visible
+        if hasattr(self, 'layer_panel_frame') and self.layer_panel_frame.winfo_viewable():
+            self.update_layer_list()
     
     def on_property_change(self, property_name: str, value: Any):
         """Handle property changes"""
@@ -326,6 +413,16 @@ class GUIBuilderApp(ctk.CTk):
             self.code_editor_frame.grid()
             self.code_view_button.configure(text="📝 Hide Code")
             self.generate_code()
+    
+    def toggle_layer_panel(self):
+        """Toggle layer panel visibility"""
+        if self.layer_panel_frame.winfo_viewable():
+            self.layer_panel_frame.grid_remove()
+            self.status_bar.configure(text="Layer panel hidden")
+        else:
+            self.layer_panel_frame.grid()
+            self.update_layer_list()
+            self.status_bar.configure(text="Layer panel shown")
     
     def toggle_grid(self):
         """Toggle grid visibility"""
@@ -431,10 +528,28 @@ class GUIBuilderApp(ctk.CTk):
                     self.canvas.widgets[widget.id] = widget
                     self.canvas.render_widget(widget)
                 
+                # Load groups
+                self.canvas.groups.clear()
+                for group_data in data.get('groups', []):
+                    group = WidgetGroup(
+                        id=group_data['id'],
+                        name=group_data['name'],
+                        widget_ids=group_data['widget_ids'],
+                        x=group_data['x'],
+                        y=group_data['y'],
+                        width=group_data['width'],
+                        height=group_data['height'],
+                        layer=group_data.get('layer', 0),
+                        visible=group_data.get('visible', True),
+                        locked=group_data.get('locked', False)
+                    )
+                    self.canvas.groups[group.id] = group
+                
                 # Load window properties
                 self.window_properties.update(data.get('window_properties', {}))
                 
-                self.canvas.draw_grid()
+                # Render all widgets and groups
+                self.canvas.render_all_widgets()
                 self.current_file = file_path
                 self.project_modified = False
                 self.status_bar.configure(text=f"Opened: {os.path.basename(file_path)}")
@@ -457,6 +572,7 @@ class GUIBuilderApp(ctk.CTk):
             try:
                 data = {
                     'widgets': [widget.to_dict() for widget in self.canvas.widgets.values()],
+                    'groups': [group.to_dict() for group in self.canvas.groups.values()],
                     'window_properties': self.window_properties
                 }
                 
@@ -707,6 +823,7 @@ Ctrl+C - Copy
 Ctrl+V - Paste
 Ctrl+D - Duplicate
 Ctrl+A - Select All
+Ctrl+Click - Multi-select widgets
 Del - Delete
 
 View Operations:
@@ -714,6 +831,11 @@ Ctrl+G - Toggle Grid
 Ctrl+Shift+G - Toggle Grid Snap
 Ctrl+B - Toggle Window Boundary
 Ctrl+Shift+V - Toggle Code View
+Ctrl+L - Toggle Layer Panel
+
+Grouping Operations:
+Ctrl+Shift+G - Create Group
+Ctrl+Shift+U - Ungroup Selected
 
 Tools:
 F5 - Preview GUI
@@ -988,6 +1110,18 @@ Built with Python and CustomTkinter.
         """Global preferences handler"""
         self.show_preferences()
     
+    def on_global_toggle_layer_panel(self, event):
+        """Global toggle layer panel handler"""
+        self.toggle_layer_panel()
+    
+    def on_global_create_group(self, event):
+        """Global create group handler"""
+        self.create_group()
+    
+    def on_global_ungroup(self, event):
+        """Global ungroup handler"""
+        self.ungroup_selected()
+    
     def update_status_info(self):
         """Update status bar with project info"""
         widget_count = len(self.canvas.widgets) if hasattr(self.canvas, 'widgets') else 0
@@ -995,6 +1129,133 @@ Built with Python and CustomTkinter.
         if self.project_modified:
             status += " (Modified)"
         self.status_bar.configure(text=status)
+    
+    def create_group(self):
+        """Create a group from selected widgets"""
+        if not hasattr(self.canvas, 'selected_widget_ids') or len(self.canvas.selected_widget_ids) < 2:
+            messagebox.showwarning("No Selection", "Please select at least 2 widgets to create a group.\n\nTip: Hold Ctrl and click multiple widgets to select them.")
+            return
+        
+        # Create group from multi-selection
+        group_id = self.canvas.create_group(name="New Group")
+        
+        if group_id:
+            self.status_bar.configure(text=f"Group created with {len(self.canvas.selected_widget_ids)} widgets")
+            # Clear selection after grouping
+            self.canvas.deselect_all()
+        else:
+            messagebox.showwarning("Group Creation", "Unable to create group. Please try again.")
+    
+    def ungroup_selected(self):
+        """Ungroup the selected group"""
+        if hasattr(self.canvas, 'selected_group_id') and self.canvas.selected_group_id:
+            self.canvas.ungroup_widgets(self.canvas.selected_group_id)
+            self.status_bar.configure(text="Group ungrouped")
+        else:
+            messagebox.showwarning("No Group Selected", "Please select a group to ungroup.")
+    
+    def update_layer_list(self):
+        """Update the layer list display"""
+        # Clear existing layer items
+        for widget in self.layer_list_frame.winfo_children():
+            widget.destroy()
+        
+        # Get all widgets and groups sorted by layer
+        all_items = []
+        
+        # Add widgets
+        for widget_id, widget in self.canvas.widgets.items():
+            all_items.append({
+                'id': widget_id,
+                'name': f"{widget.type.value} ({widget_id[:8]})",
+                'layer': widget.layer,
+                'type': 'widget'
+            })
+        
+        # Add groups
+        for group_id, group in self.canvas.groups.items():
+            all_items.append({
+                'id': group_id,
+                'name': f"📁 {group.name}",
+                'layer': group.layer,
+                'type': 'group'
+            })
+        
+        # Sort by layer (highest first)
+        all_items.sort(key=lambda x: x['layer'], reverse=True)
+        
+        # Create layer items
+        for item in all_items:
+            layer_item = ctk.CTkFrame(self.layer_list_frame)
+            layer_item.pack(fill="x", padx=5, pady=2)
+            
+            # Layer number and name
+            layer_text = f"Layer {item['layer']}: {item['name']}"
+            layer_label = ctk.CTkLabel(layer_item, text=layer_text, font=ctk.CTkFont(size=10))
+            layer_label.pack(side="left", padx=5, pady=2)
+            
+            # Selection indicator
+            if ((item['type'] == 'widget' and item['id'] == self.canvas.selected_widget_id) or
+                (item['type'] == 'group' and item['id'] == self.canvas.selected_group_id)):
+                layer_label.configure(text_color="#0066cc")
+    
+    def bring_selected_to_front(self):
+        """Bring selected widget/group to front"""
+        if self.canvas.selected_widget_id:
+            self.canvas.bring_to_front(self.canvas.selected_widget_id)
+            self.update_layer_list()
+            self.status_bar.configure(text="Widget brought to front")
+        elif self.canvas.selected_group_id:
+            max_layer = max((w.layer for w in self.canvas.widgets.values()), default=0)
+            self.canvas.set_group_layer(self.canvas.selected_group_id, max_layer + 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Group brought to front")
+        else:
+            messagebox.showwarning("No Selection", "Please select a widget or group.")
+    
+    def send_selected_to_back(self):
+        """Send selected widget/group to back"""
+        if self.canvas.selected_widget_id:
+            self.canvas.send_to_back(self.canvas.selected_widget_id)
+            self.update_layer_list()
+            self.status_bar.configure(text="Widget sent to back")
+        elif self.canvas.selected_group_id:
+            min_layer = min((w.layer for w in self.canvas.widgets.values()), default=0)
+            self.canvas.set_group_layer(self.canvas.selected_group_id, min_layer - 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Group sent to back")
+        else:
+            messagebox.showwarning("No Selection", "Please select a widget or group.")
+    
+    def move_selected_up(self):
+        """Move selected widget/group up one layer"""
+        if self.canvas.selected_widget_id:
+            widget = self.canvas.widgets[self.canvas.selected_widget_id]
+            self.canvas.set_widget_layer(self.canvas.selected_widget_id, widget.layer + 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Widget moved up one layer")
+        elif self.canvas.selected_group_id:
+            group = self.canvas.groups[self.canvas.selected_group_id]
+            self.canvas.set_group_layer(self.canvas.selected_group_id, group.layer + 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Group moved up one layer")
+        else:
+            messagebox.showwarning("No Selection", "Please select a widget or group.")
+    
+    def move_selected_down(self):
+        """Move selected widget/group down one layer"""
+        if self.canvas.selected_widget_id:
+            widget = self.canvas.widgets[self.canvas.selected_widget_id]
+            self.canvas.set_widget_layer(self.canvas.selected_widget_id, widget.layer - 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Widget moved down one layer")
+        elif self.canvas.selected_group_id:
+            group = self.canvas.groups[self.canvas.selected_group_id]
+            self.canvas.set_group_layer(self.canvas.selected_group_id, group.layer - 1)
+            self.update_layer_list()
+            self.status_bar.configure(text="Group moved down one layer")
+        else:
+            messagebox.showwarning("No Selection", "Please select a widget or group.")
     
     def on_main_window_close(self):
         """Handle main window close"""

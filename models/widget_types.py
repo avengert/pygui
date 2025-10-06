@@ -38,6 +38,8 @@ class WidgetData:
     width: int
     height: int
     properties: Dict[str, WidgetProperty]
+    group_id: Optional[str] = None  # ID of the group this widget belongs to
+    layer: int = 0  # Layer number (higher numbers are on top)
     
     def to_dict(self):
         return {
@@ -47,6 +49,37 @@ class WidgetData:
             'y': self.y,
             'width': self.width,
             'height': self.height,
+            'group_id': self.group_id,
+            'layer': self.layer,
             'properties': {k: {'name': v.name, 'value': v.value, 'type': v.type, 'options': v.options} 
                           for k, v in self.properties.items()}
+        }
+
+
+@dataclass
+class WidgetGroup:
+    """Represents a group of widgets"""
+    id: str
+    name: str
+    widget_ids: List[str]
+    x: int
+    y: int
+    width: int
+    height: int
+    layer: int = 0
+    visible: bool = True
+    locked: bool = False
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'widget_ids': self.widget_ids,
+            'x': self.x,
+            'y': self.y,
+            'width': self.width,
+            'height': self.height,
+            'layer': self.layer,
+            'visible': self.visible,
+            'locked': self.locked
         }
