@@ -1094,6 +1094,30 @@ class DesignCanvas(ctk.CTkCanvas):
                 if hasattr(main_app, 'project_modified'):
                     main_app.project_modified = True
                     main_app.update_status_info()
+    
+    def highlight_widgets_from_code(self, widget_ids: List[str]):
+        """Highlight widgets that were updated from code"""
+        try:
+            # Clear previous highlights
+            self.delete("code_update_highlight")
+            
+            # Highlight each widget with a temporary border
+            for widget_id in widget_ids:
+                if widget_id in self.widgets:
+                    widget = self.widgets[widget_id]
+                    
+                    # Create a temporary highlight rectangle
+                    highlight_id = self.create_rectangle(
+                        widget.x - 2, widget.y - 2,
+                        widget.x + widget.width + 2, widget.y + widget.height + 2,
+                        outline="#00ff00", width=3, fill="", tags="code_update_highlight"
+                    )
+                    
+                    # Remove highlight after 2 seconds
+                    self.after(2000, lambda: self.delete("code_update_highlight"))
+            
+        except Exception as e:
+            print(f"Error highlighting widgets: {e}")
 
 class PropertiesEditor(ctk.CTkFrame):
     """Right panel for editing widget properties"""
@@ -1261,6 +1285,762 @@ class CodeEditor(ctk.CTkFrame):
         """Basic syntax highlighting (placeholder for future enhancement)"""
         # This could be enhanced with proper Python syntax highlighting
         pass
+
+class PopOutCodeEditor(ctk.CTkToplevel):
+    """Pop-out window for the code editor"""
+    
+    def __init__(self, parent_app, on_code_change, on_close_callback):
+        super().__init__()
+        self.parent_app = parent_app
+        self.on_code_change = on_code_change
+        self.on_close_callback = on_close_callback
+        
+        self.title("Code Editor - Pop-out")
+        self.geometry("600x700")
+        self.minsize(400, 300)
+        
+        # Make this window stay on top of the main window
+        self.transient(parent_app)
+        self.grab_set()
+        
+        # Setup the UI
+        self.setup_ui()
+        
+        # Handle window close events
+        self.protocol("WM_DELETE_WINDOW", self.on_window_close)
+    
+    def setup_ui(self):
+        """Setup the pop-out code editor UI"""
+        # Main frame
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Title
+        title = ctk.CTkLabel(main_frame, text="Code Editor", font=ctk.CTkFont(size=16, weight="bold"))
+        title.pack(pady=10)
+        
+        # Code text area with scrollbar
+        self.code_text = ctk.CTkTextbox(
+            main_frame,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            wrap="none"
+        )
+        self.code_text.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Control buttons frame
+        controls_frame = ctk.CTkFrame(main_frame)
+        controls_frame.pack(fill="x", padx=10, pady=(5, 10))
+        
+        # Control buttons
+        self.sync_button = ctk.CTkButton(
+            controls_frame, text="🔄 Sync from Design", width=120, height=25,
+            command=self.sync_from_design, font=ctk.CTkFont(size=10)
+        )
+        self.sync_button.pack(side="left", padx=5, pady=5)
+        
+        self.validate_button = ctk.CTkButton(
+            controls_frame, text="✅ Validate", width=80, height=25,
+            command=self.validate_code, font=ctk.CTkFont(size=10)
+        )
+        self.validate_button.pack(side="left", padx=5, pady=5)
+        
+        self.run_button = ctk.CTkButton(
+            controls_frame, text="▶️ Run Code", width=80, height=25,
+            command=self.run_code, font=ctk.CTkFont(size=10)
+        )
+        self.run_button.pack(side="left", padx=5, pady=5)
+        
+        self.export_button = ctk.CTkButton(
+            controls_frame, text="💾 Export", width=80, height=25,
+            command=self.export_code, font=ctk.CTkFont(size=10)
+        )
+        self.export_button.pack(side="right", padx=5, pady=5)
+        
+        # Pop-in button
+        self.pop_in_button = ctk.CTkButton(
+            controls_frame, text="📌 Pop Back In", width=100, height=25,
+            command=self.pop_back_in, font=ctk.CTkFont(size=10)
+        )
+        self.pop_in_button.pack(side="right", padx=5, pady=5)
+        
+        # Bind text change events
+        self.code_text.bind("<KeyRelease>", self.on_text_change)
+        self.code_text.bind("<Button-1>", self.on_text_change)
+    
+    def set_code(self, code: str):
+        """Set the code content"""
+        self.code_text.delete("1.0", "end")
+        self.code_text.insert("1.0", code)
+    
+    def get_code(self) -> str:
+        """Get the current code content"""
+        return self.code_text.get("1.0", "end-1c")
+    
+    def on_text_change(self, event=None):
+        """Handle text change events"""
+        if self.on_code_change:
+            self.on_code_change(self.get_code())
+    
+    def sync_from_design(self):
+        """Sync code from the design canvas"""
+        if hasattr(self.parent_app, 'sync_code_from_design'):
+            self.parent_app.sync_code_from_design()
+    
+    def validate_code(self):
+        """Validate the current code"""
+        if hasattr(self.parent_app, 'validate_code'):
+            self.parent_app.validate_code()
+    
+    def run_code(self):
+        """Run the current code"""
+        if hasattr(self.parent_app, 'run_generated_code'):
+            self.parent_app.run_generated_code()
+    
+    def export_code(self):
+        """Export the current code"""
+        if hasattr(self.parent_app, 'export_edited_code'):
+            self.parent_app.export_edited_code()
+    
+    def pop_back_in(self):
+        """Pop the code editor back into the main window"""
+        self.on_close_callback()
+        self.destroy()
+    
+    def on_window_close(self):
+        """Handle window close event"""
+        self.on_close_callback()
+        self.destroy()
+
+class CodeParser:
+    """Parses Python code to extract widget data"""
+    
+    @staticmethod
+    def parse_code_to_widgets(code: str) -> tuple[Dict[str, WidgetData], dict]:
+        """Parse generated code and extract widget data and window properties"""
+        print(f"DEBUG: parse_code_to_widgets called with {len(code)} characters")
+        widgets = {}
+        window_properties = {
+            'title': 'Generated GUI',
+            'width': 800,
+            'height': 600,
+            'resizable': True,
+            'min_width': 400,
+            'min_height': 300,
+            'center_on_screen': True
+        }
+        
+        try:
+            lines = code.split('\n')
+            in_setup_ui = False
+            current_widget_lines = []
+            
+            print(f"DEBUG: Processing {len(lines)} lines")
+            
+            for i, line in enumerate(lines):
+                line = line.strip()
+                
+                # Extract window properties
+                if "self.title(" in line:
+                    title = CodeParser._extract_string_value(line)
+                    if title:
+                        window_properties['title'] = title
+                        print(f"DEBUG: Found title: {title}")
+                elif "self.geometry(" in line:
+                    geometry = CodeParser._extract_string_value(line)
+                    if geometry and 'x' in geometry:
+                        width, height = geometry.split('x')
+                        window_properties['width'] = int(width)
+                        window_properties['height'] = int(height)
+                        print(f"DEBUG: Found geometry: {width}x{height}")
+                
+                # Check if we're in setup_ui method
+                if "def setup_ui(self):" in line:
+                    in_setup_ui = True
+                    print("DEBUG: Entered setup_ui method")
+                    continue
+                elif line.startswith("def ") and in_setup_ui:
+                    in_setup_ui = False
+                    print("DEBUG: Exited setup_ui method")
+                
+                if not in_setup_ui:
+                    continue
+                
+                # Check if this is a widget creation line (but not a .place() call)
+                if any(f"self.{widget_type}_" in line for widget_type in ['button', 'label', 'entry', 'checkbox', 'combobox', 'slider', 'progressbar']) and not ".place(" in line:
+                    print(f"DEBUG: Found widget creation line: {line}")
+                    # Start collecting widget lines
+                    current_widget_lines = [line]
+                elif current_widget_lines and line.strip() == ")":
+                    print(f"DEBUG: Found widget closing line: {line}")
+                    # End of widget creation, add the closing parenthesis
+                    current_widget_lines.append(line)
+                    
+                    # Look for the .place() call in the next few lines
+                    place_line = None
+                    for j in range(i+1, min(i+5, len(lines))):
+                        if ".place(" in lines[j]:
+                            place_line = lines[j].strip()
+                            print(f"DEBUG: Found place line: {place_line}")
+                            break
+                    
+                    # Parse the complete widget definition
+                    print(f"DEBUG: Parsing widget block with {len(current_widget_lines)} lines")
+                    widget_data = CodeParser._parse_widget_block(current_widget_lines, place_line)
+                    if widget_data:
+                        widgets[widget_data.id] = widget_data
+                        print(f"DEBUG: Successfully parsed widget {widget_data.id}")
+                    else:
+                        print("DEBUG: Failed to parse widget")
+                    
+                    # Reset state after parsing
+                    current_widget_lines = []
+                elif current_widget_lines and not line.startswith("        #") and not line.startswith("        self.") and not line.strip() == "":
+                    # Continue collecting widget lines (but not comments, other widget lines, or empty lines)
+                    current_widget_lines.append(line)
+                    print(f"DEBUG: Added line to widget block: {line}")
+            
+            print(f"DEBUG: Parsing complete, found {len(widgets)} widgets")
+            return widgets, window_properties
+            
+        except Exception as e:
+            print(f"DEBUG: Error parsing code: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}, window_properties
+    
+    @staticmethod
+    def _extract_string_value(line: str) -> str:
+        """Extract string value from a line like self.title('value')"""
+        try:
+            # Find the string between quotes
+            start = line.find("'")
+            if start == -1:
+                start = line.find('"')
+            if start == -1:
+                return ""
+            
+            start += 1
+            end = line.find("'", start)
+            if end == -1:
+                end = line.find('"', start)
+            if end == -1:
+                return ""
+            
+            return line[start:end]
+        except:
+            return ""
+    
+    @staticmethod
+    def _parse_widget_block(widget_lines: List[str], place_line: str = None) -> Optional[WidgetData]:
+        """Parse a complete widget definition block including .place() call"""
+        try:
+            # Combine all widget lines into a single string for parsing
+            widget_text = " ".join(widget_lines)
+            
+            # Extract widget type and variable name
+            if "self.button_" in widget_text:
+                return CodeParser._parse_button_block(widget_text, place_line)
+            elif "self.label_" in widget_text:
+                return CodeParser._parse_label_block(widget_text, place_line)
+            elif "self.entry_" in widget_text:
+                return CodeParser._parse_entry_block(widget_text, place_line)
+            elif "self.checkbox_" in widget_text:
+                return CodeParser._parse_checkbox_block(widget_text, place_line)
+            elif "self.combobox_" in widget_text:
+                return CodeParser._parse_combobox_block(widget_text, place_line)
+            elif "self.slider_" in widget_text:
+                return CodeParser._parse_slider_block(widget_text, place_line)
+            elif "self.progressbar_" in widget_text:
+                return CodeParser._parse_progressbar_block(widget_text, place_line)
+            
+            return None
+        except Exception as e:
+            print(f"Error parsing widget block: {e}")
+            return None
+    
+    @staticmethod
+    def _parse_widget_line(line: str) -> Optional[WidgetData]:
+        """Parse a single widget creation line (legacy method)"""
+        try:
+            # Extract widget type and variable name
+            if "self.button_" in line:
+                return CodeParser._parse_button(line)
+            elif "self.label_" in line:
+                return CodeParser._parse_label(line)
+            elif "self.entry_" in line:
+                return CodeParser._parse_entry(line)
+            elif "self.checkbox_" in line:
+                return CodeParser._parse_checkbox(line)
+            elif "self.combobox_" in line:
+                return CodeParser._parse_combobox(line)
+            elif "self.slider_" in line:
+                return CodeParser._parse_slider(line)
+            elif "self.progressbar_" in line:
+                return CodeParser._parse_progressbar(line)
+            
+            return None
+        except Exception as e:
+            print(f"Error parsing widget line: {e}")
+            return None
+    
+    @staticmethod
+    def _parse_button_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse button widget from complete widget block"""
+        # Extract variable name and properties
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("button_", "")
+        
+        # Extract properties from the widget creation
+        text = CodeParser._extract_property_value(widget_text, "text")
+        width = CodeParser._extract_property_value(widget_text, "width", 100)
+        height = CodeParser._extract_property_value(widget_text, "height", 30)
+        
+        # Extract position from .place() call
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Button', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.BUTTON,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_button(line: str) -> WidgetData:
+        """Parse button widget from code (legacy method)"""
+        # Extract variable name and properties
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("button_", "")
+        
+        # Extract properties
+        text = CodeParser._extract_property_value(line, "text")
+        width = CodeParser._extract_property_value(line, "width", 100)
+        height = CodeParser._extract_property_value(line, "height", 30)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Button', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.BUTTON,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_label(line: str) -> WidgetData:
+        """Parse label widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("label_", "")
+        
+        text = CodeParser._extract_property_value(line, "text")
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 30)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Label', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.LABEL,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_entry(line: str) -> WidgetData:
+        """Parse entry widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("entry_", "")
+        
+        placeholder = CodeParser._extract_property_value(line, "placeholder_text")
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 30)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'placeholder_text': WidgetProperty('placeholder_text', placeholder or '', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.ENTRY,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_checkbox(line: str) -> WidgetData:
+        """Parse checkbox widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("checkbox_", "")
+        
+        text = CodeParser._extract_property_value(line, "text")
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 30)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Checkbox', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.CHECKBOX,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_combobox(line: str) -> WidgetData:
+        """Parse combobox widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("combobox_", "")
+        
+        values = CodeParser._extract_property_value(line, "values")
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 30)
+        x, y = CodeParser._extract_position(line)
+        
+        # Parse values list
+        values_list = []
+        if values and values.startswith('[') and values.endswith(']'):
+            values_str = values[1:-1]  # Remove brackets
+            values_list = [v.strip().strip("'\"") for v in values_str.split(',')]
+        
+        properties = {
+            'values': WidgetProperty('values', values_list, 'list'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.COMBOBOX,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_slider(line: str) -> WidgetData:
+        """Parse slider widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("slider_", "")
+        
+        from_val = CodeParser._extract_property_value(line, "from_", 0)
+        to_val = CodeParser._extract_property_value(line, "to", 100)
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 20)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'from_': WidgetProperty('from_', from_val, 'int'),
+            'to': WidgetProperty('to', to_val, 'int'),
+            'value': WidgetProperty('value', 50, 'int'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.SLIDER,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_progressbar(line: str) -> WidgetData:
+        """Parse progressbar widget from code"""
+        var_name = CodeParser._extract_variable_name(line)
+        widget_id = var_name.replace("progressbar_", "")
+        
+        width = CodeParser._extract_property_value(line, "width", 200)
+        height = CodeParser._extract_property_value(line, "height", 20)
+        x, y = CodeParser._extract_position(line)
+        
+        properties = {
+            'mode': WidgetProperty('mode', 'determinate', 'str'),
+            'value': WidgetProperty('value', 50, 'int'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.PROGRESSBAR,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _extract_variable_name(line: str) -> str:
+        """Extract variable name from widget creation line"""
+        try:
+            # Find self.widget_type_xxx = pattern
+            start = line.find("self.")
+            if start == -1:
+                return ""
+            
+            end = line.find(" =", start)
+            if end == -1:
+                return ""
+            
+            return line[start+5:end]  # Skip "self."
+        except:
+            return ""
+    
+    @staticmethod
+    def _extract_property_value(line: str, prop_name: str, default=None):
+        """Extract property value from widget creation line"""
+        try:
+            # Look for prop_name=value pattern
+            pattern = f"{prop_name}="
+            start = line.find(pattern)
+            if start == -1:
+                return default
+            
+            start += len(pattern)
+            
+            # Find the end of the value
+            if line[start] == "'" or line[start] == '"':
+                # String value
+                quote = line[start]
+                start += 1
+                end = line.find(quote, start)
+                if end == -1:
+                    return default
+                return line[start:end]
+            else:
+                # Numeric value
+                end = start
+                while end < len(line) and (line[end].isdigit() or line[end] == '.' or line[end] == '-'):
+                    end += 1
+                if end == start:
+                    return default
+                return int(line[start:end]) if '.' not in line[start:end] else float(line[start:end])
+        except:
+            return default
+    
+    @staticmethod
+    def _extract_position(line: str) -> tuple[int, int]:
+        """Extract x, y position from place() call"""
+        try:
+            # Look for .place(x=..., y=...) pattern
+            x_start = line.find("x=")
+            if x_start == -1:
+                return 0, 0
+            
+            x_start += 2
+            x_end = x_start
+            while x_end < len(line) and (line[x_end].isdigit() or line[x_end] == '-'):
+                x_end += 1
+            
+            y_start = line.find("y=")
+            if y_start == -1:
+                return 0, 0
+            
+            y_start += 2
+            y_end = y_start
+            while y_end < len(line) and (line[y_end].isdigit() or line[y_end] == '-'):
+                y_end += 1
+            
+            x = int(line[x_start:x_end]) if x_start < x_end else 0
+            y = int(line[y_start:y_end]) if y_start < y_end else 0
+            
+            return x, y
+        except:
+            return 0, 0
+    
+    @staticmethod
+    def _parse_label_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse label widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("label_", "")
+        
+        text = CodeParser._extract_property_value(widget_text, "text")
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 30)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Label', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.LABEL,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_entry_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse entry widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("entry_", "")
+        
+        placeholder = CodeParser._extract_property_value(widget_text, "placeholder_text")
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 30)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'placeholder_text': WidgetProperty('placeholder_text', placeholder or '', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.ENTRY,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_checkbox_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse checkbox widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("checkbox_", "")
+        
+        text = CodeParser._extract_property_value(widget_text, "text")
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 30)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'text': WidgetProperty('text', text or 'Checkbox', 'str'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.CHECKBOX,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_combobox_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse combobox widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("combobox_", "")
+        
+        values = CodeParser._extract_property_value(widget_text, "values")
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 30)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        # Parse values list
+        values_list = []
+        if values and values.startswith('[') and values.endswith(']'):
+            values_str = values[1:-1]  # Remove brackets
+            values_list = [v.strip().strip("'\"") for v in values_str.split(',')]
+        
+        properties = {
+            'values': WidgetProperty('values', values_list, 'list'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.COMBOBOX,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_slider_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse slider widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("slider_", "")
+        
+        from_val = CodeParser._extract_property_value(widget_text, "from_", 0)
+        to_val = CodeParser._extract_property_value(widget_text, "to", 100)
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 20)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'from_': WidgetProperty('from_', from_val, 'int'),
+            'to': WidgetProperty('to', to_val, 'int'),
+            'value': WidgetProperty('value', 50, 'int'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.SLIDER,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
+    
+    @staticmethod
+    def _parse_progressbar_block(widget_text: str, place_line: str = None) -> WidgetData:
+        """Parse progressbar widget from complete widget block"""
+        var_name = CodeParser._extract_variable_name(widget_text)
+        widget_id = var_name.replace("progressbar_", "")
+        
+        width = CodeParser._extract_property_value(widget_text, "width", 200)
+        height = CodeParser._extract_property_value(widget_text, "height", 20)
+        
+        x, y = 0, 0
+        if place_line:
+            x, y = CodeParser._extract_position(place_line)
+        
+        properties = {
+            'mode': WidgetProperty('mode', 'determinate', 'str'),
+            'value': WidgetProperty('value', 50, 'int'),
+            'width': WidgetProperty('width', width, 'int'),
+            'height': WidgetProperty('height', height, 'int')
+        }
+        
+        return WidgetData(
+            id=widget_id,
+            type=WidgetType.PROGRESSBAR,
+            x=x, y=y, width=width, height=height,
+            properties=properties
+        )
 
 class CodeGenerator:
     """Generates Python code from widget data"""
@@ -1588,6 +2368,10 @@ class GUIBuilderApp(ctk.CTk):
         self.recent_files = []
         self.project_modified = False
         
+        # Code editor pop-out state
+        self.code_editor_popped_out = False
+        self.pop_out_window = None
+        
         # Window properties
         self.window_properties = {
             'title': 'Generated GUI',
@@ -1608,6 +2392,9 @@ class GUIBuilderApp(ctk.CTk):
         self.setup_toolbar()
         self.setup_global_bindings()
         self.load_recent_files()
+        
+        # Handle window close events
+        self.protocol("WM_DELETE_WINDOW", self.on_main_window_close)
     
     def setup_ui(self):
         """Setup the main UI with Visual Studio-like layout"""
@@ -1679,6 +2466,13 @@ class GUIBuilderApp(ctk.CTk):
             command=self.export_edited_code, font=ctk.CTkFont(size=10)
         )
         self.code_export_button.pack(side="right", padx=5, pady=5)
+        
+        # Pop-out button
+        self.code_popout_button = ctk.CTkButton(
+            self.code_controls_frame, text="📤 Pop Out", width=80, height=25,
+            command=self.pop_code_editor_out, font=ctk.CTkFont(size=10)
+        )
+        self.code_popout_button.pack(side="right", padx=5, pady=5)
     
     def setup_toolbar(self):
         """Setup the professional toolbar"""
@@ -2177,10 +2971,13 @@ class GUIBuilderApp(ctk.CTk):
             self.canvas.delete("boundary_warning")
     
     def toggle_code_view(self):
-        """Toggle code view panel"""
+        """Toggle code view panel or pop-out window"""
         print("Toggle code view called!")  # Debug message
         try:
-            if self.code_editor_frame.winfo_viewable():
+            if self.code_editor_popped_out:
+                # Code editor is popped out - bring it back in
+                self.pop_code_editor_back_in()
+            elif self.code_editor_frame.winfo_viewable():
                 # Hide code editor - switch to Design Mode
                 self.code_editor_frame.grid_remove()
                 self.status_bar.configure(text="Switched to Design Mode")
@@ -2196,6 +2993,102 @@ class GUIBuilderApp(ctk.CTk):
         except Exception as e:
             print(f"Error in toggle_code_view: {e}")
             self.status_bar.configure(text=f"Error: {str(e)}")
+    
+    def pop_code_editor_out(self):
+        """Pop the code editor out into a separate window"""
+        try:
+            # Get current code content
+            current_code = self.code_editor.get_code() if hasattr(self, 'code_editor') else ""
+            
+            # Create pop-out window
+            self.pop_out_window = PopOutCodeEditor(
+                self, 
+                self.on_code_change, 
+                self.handle_popout_window_close
+            )
+            
+            # Set the code content in the pop-out window
+            if current_code:
+                self.pop_out_window.set_code(current_code)
+            else:
+                # Sync from design if no current code
+                self.sync_code_from_design()
+                if hasattr(self, 'code_editor'):
+                    current_code = self.code_editor.get_code()
+                    self.pop_out_window.set_code(current_code)
+            
+            # Hide the embedded code editor
+            self.code_editor_frame.grid_remove()
+            
+            # Update state
+            self.code_editor_popped_out = True
+            self.status_bar.configure(text="Code Editor popped out")
+            self.mode_toggle_button.configure(text="📌 Pop Back In")
+            
+        except Exception as e:
+            print(f"Error popping out code editor: {e}")
+            self.status_bar.configure(text=f"Error: {str(e)}")
+    
+    def pop_code_editor_back_in(self):
+        """Pop the code editor back into the main window"""
+        try:
+            # Get code from pop-out window if it exists
+            if self.pop_out_window and hasattr(self.pop_out_window, 'get_code'):
+                current_code = self.pop_out_window.get_code()
+                # Update the embedded code editor with the current code
+                if hasattr(self, 'code_editor'):
+                    self.code_editor.set_code(current_code)
+            
+            # Close the pop-out window
+            if self.pop_out_window:
+                self.pop_out_window.destroy()
+                self.pop_out_window = None
+            
+            # Show the embedded code editor
+            self.code_editor_frame.grid()
+            
+            # Update state
+            self.code_editor_popped_out = False
+            self.status_bar.configure(text="Code Editor popped back in")
+            self.mode_toggle_button.configure(text="📝 Code Mode")
+            
+        except Exception as e:
+            print(f"Error popping code editor back in: {e}")
+            self.status_bar.configure(text=f"Error: {str(e)}")
+    
+    def handle_popout_window_close(self):
+        """Handle when the pop-out window is closed externally"""
+        try:
+            # Reset state without trying to get code from destroyed window
+            self.code_editor_popped_out = False
+            self.pop_out_window = None
+            
+            # Show the embedded code editor
+            self.code_editor_frame.grid()
+            
+            # Update UI
+            self.status_bar.configure(text="Code Editor window closed - back to embedded view")
+            self.mode_toggle_button.configure(text="📝 Code Mode")
+            
+        except Exception as e:
+            print(f"Error handling pop-out window close: {e}")
+            self.status_bar.configure(text=f"Error: {str(e)}")
+    
+    def on_main_window_close(self):
+        """Handle main window close event"""
+        try:
+            # Close pop-out window if it exists
+            if self.pop_out_window:
+                self.pop_out_window.destroy()
+                self.pop_out_window = None
+            
+            # Close the main application
+            self.destroy()
+            
+        except Exception as e:
+            print(f"Error closing main window: {e}")
+            # Force close even if there's an error
+            self.destroy()
     
     def preview_gui(self):
         """Preview the generated GUI"""
@@ -2953,9 +3846,77 @@ Built with Python and CustomTkinter
         self.on_auto_fit_toggle()  # Update entry states
     
     def on_code_change(self, code: str):
-        """Handle code changes in the editor"""
-        # This could be used for real-time validation or other features
-        pass
+        """Handle code changes in the editor with live canvas updates"""
+        print(f"DEBUG: on_code_change called with code length: {len(code)}")
+        try:
+            # Basic validation - check if code is empty or just comments
+            if not code.strip() or code.strip().startswith('#'):
+                print("DEBUG: Code is empty or just comments")
+                self.status_bar.configure(text="Code editor is empty or contains only comments")
+                return
+            
+            print("DEBUG: Parsing code...")
+            # Parse the code to extract widgets and window properties
+            widgets, window_properties = CodeParser.parse_code_to_widgets(code)
+            print(f"DEBUG: Parsed {len(widgets)} widgets")
+            
+            # Update window properties if they changed
+            if window_properties != self.window_properties:
+                self.window_properties.update(window_properties)
+            
+            # Update canvas with parsed widgets
+            if widgets:
+                print("DEBUG: Updating canvas with widgets")
+                # Clear current canvas
+                self.canvas.widgets.clear()
+                self.canvas.delete("all")
+                
+                # Add parsed widgets to canvas
+                widget_ids = []
+                for widget_data in widgets.values():
+                    print(f"DEBUG: Adding widget {widget_data.id} at ({widget_data.x}, {widget_data.y})")
+                    self.canvas.widgets[widget_data.id] = widget_data
+                    # Force immediate rendering instead of batched
+                    self.canvas.render_single_widget(widget_data)
+                    widget_ids.append(widget_data.id)
+                
+                # Redraw grid and update status
+                self.canvas.draw_grid()
+                self.canvas.draw_window_boundary()
+                self.status_bar.configure(text=f"Canvas updated from code - {len(widgets)} widgets")
+                
+                # Highlight the updated widgets
+                self.canvas.highlight_widgets_from_code(widget_ids)
+                
+                # Mark project as modified
+                self.project_modified = True
+                self.update_status_info()
+                print("DEBUG: Canvas update complete")
+            else:
+                print("DEBUG: No widgets found in code")
+                # No widgets found in code, clear canvas
+                if self.canvas.widgets:
+                    self.canvas.widgets.clear()
+                    self.canvas.delete("all")
+                    self.canvas.draw_grid()
+                    self.status_bar.configure(text="Canvas cleared - no widgets found in code")
+            
+        except Exception as e:
+            # Handle parsing errors gracefully
+            error_msg = f"Error parsing code: {str(e)}"
+            print(f"DEBUG: {error_msg}")
+            self.status_bar.configure(text="Code parsing error - canvas not updated")
+            
+            # Show a brief error indicator on the canvas
+            self.canvas.delete("code_error_indicator")
+            self.canvas.create_text(
+                self.canvas.winfo_width() // 2, 30,
+                text="⚠️ Code parsing error", fill="#ff4444", 
+                font=("Arial", 12, "bold"), tags="code_error_indicator"
+            )
+            
+            # Remove error indicator after 3 seconds
+            self.canvas.after(3000, lambda: self.canvas.delete("code_error_indicator"))
     
     def sync_code_from_design(self):
         """Sync code editor with current design"""
